@@ -52,6 +52,7 @@
 #include "libmesh/error_vector.h"
 #include "libmesh/kelly_error_estimator.h"
 #include "libmesh/patch_recovery_error_estimator.h"
+#include "libmesh/uniform_refinement_estimator.h"
 #include "libmesh/mesh_refinement.h"
 #include "libmesh/getpot.h"
 
@@ -100,7 +101,7 @@ int main (int argc, char** argv)
   const unsigned int approx_order   = input_file("approx_order", 1);              // not used here for P2-P1 MFEM
   const std::string element_type    = input_file("element_type", "tensor");       // *** set as default
   const int extra_error_quadrature  = input_file("extra_error_quadrature", 0);    // *** set as default
-  const int max_linear_iterations   = input_file("max_linear_iterations", 5000);  // *** set as default
+  const int max_linear_iterations   = input_file("max_linear_iterations", 8000);  // *** set as default
   const std::string indicator_type  = input_file("indicator_type", "kelly");      // set a value
   const unsigned int dim            = input_file("dimension", 2);                 // *** set as default
   const bool singularity = input_file("singularity", true);                       // *** set as default
@@ -173,9 +174,9 @@ int main (int argc, char** argv)
   // Initialize the data structures for the equation system.
   equation_systems.init ();
   equation_systems.parameters.set<unsigned int>("linear solver maximum iterations") = max_linear_iterations;
-  equation_systems.parameters.set<Real>        ("linear solver tolerance") = TOLERANCE*TOLERANCE;
+  equation_systems.parameters.set<Real>        ("linear solver tolerance") = TOLERANCE;
   equation_systems.parameters.set<Real>        ("viscosity") = viscosity;
-  std::cout<<"Line 178: print TOLERANCE: linear solver tolerance = "<<TOLERANCE<<std::endl;
+  std::cout<<"Line 178: print TOLERANCE: linear solver tolerance = "<<TOLERANCE<<std::endl; //1E-6
   
   // -----------------------------------------------------------------------------------------------------------+
   // A refinement loop.
@@ -190,7 +191,8 @@ int main (int argc, char** argv)
     //equation_systems.print_info();
     
     // Assemble & solve the linear system, then write the solution.
-    equation_systems.get_system("Stokes").solve();
+    //equation_systems.get_system("Stokes").solve();
+    system.solve();
     
     std::cout <<"System has: "<<equation_systems.n_active_dofs()<<" degrees of freedom."<< std::endl;
     
@@ -214,13 +216,41 @@ int main (int argc, char** argv)
     {
       // Error estimation objects, see Adaptivity Example 2 for details
       ErrorVector error;
-      KellyErrorEstimator error_estimator;
       
-      // Compute the error for each active element
-      error_estimator.estimate_error(system, error);
+      if( indicator_type == "kelly" )
+      {
+        // Compute the error for each active element
+        KellyErrorEstimator error_estimator;
+        error_estimator.estimate_error(system, error);
+      }
+      else if (indicator_type == "patch")
+      {
+        // The patch recovery estimator should give a
+        // good estimate of the solution interpolation error.
+        PatchRecoveryErrorEstimator error_estimator;
+        error_estimator.estimate_error (system, error);
+      }
+      else if (indicator_type == "uniform")
+      {
+        // Error indication based on uniform refinement is reliable, but very expensive.
+        UniformRefinementEstimator error_estimator;
+        error_estimator.estimate_error (system, error);
+      }
+      else
+      {
+        // kelly error estimator is used as default.
+        libmesh_assert_equal_to (indicator_type, "kelly");
+        
+        // The Kelly error estimator is based on an error bound for the Poisson problem
+        // on linear elements, but is useful for driving adaptive refinement in many problems
+        KellyErrorEstimator error_estimator;
+        error_estimator.estimate_error (system, error);
+      }
+
       
       // Output error estimate magnitude
-      libMesh::out<<"Error estimate\nl2 norm = "<<error.l2_norm()<<"\nmaximum = "<<error.maximum()<<std::endl;
+      libMesh::out << "Error estimate\nl2 norm = "<<error.l2_norm()
+                   << "\nmaximum = " << error.maximum() << std::endl;
       
       // Flag elements to be refined and coarsened
       mesh_refinement.flag_elements_by_error_fraction (error);
@@ -228,9 +258,8 @@ int main (int argc, char** argv)
       // Perform refinement and coarsening
       mesh_refinement.refine_and_coarsen_elements();
       
-      // Reinitialize the equation_systems object for the newly refined
-      // mesh. One of the steps in this is project the solution onto the
-      // new mesh
+      // Reinitialize the equation_systems object for the newly refined mesh.
+      // *** One of the steps in this is project the solution onto the new mesh ***
       equation_systems.reinit();
     } // end if(r_step != max_r_steps)
     
